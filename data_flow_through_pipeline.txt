@@ -1,0 +1,15 @@
+main.py (frame capture)
+    ↓
+preprocess.py (binary lane detection)
+    ↓  
+warp.py (perspective transform to bird's-eye)
+    ↓
+lane_fit.py (detect lanes & fit curves)
+    ↓
+temporal.py (smooth detection over time)
+    ↓  
+overlay.py (draw results on original frame)
+    ↓
+metrics.py (record performance data)
+    ↓
+main.py (write output video & CSV)

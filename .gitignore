@@ -1,0 +1,32 @@
+# Python - ignores ALL __pycache__ folders in all subdirectories
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# tusimple data
+tusimple_data/
+.tusimple_data/
+
+# -------------------------------------------------
+# Large video files – never commit to Git
+# -------------------------------------------------
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# keep a tiny sample (≤ 50 MB) if you want
+!data/sample_test_video.mp4
+!outputs/sample_output/sample_test_video.mp4

@@ -1,0 +1,130 @@
+import cv2
+import numpy as np
+
+# Creates the final annotated video with lane overlays and information display
+# Responsibilities:
+#     Lane Drawing: Draws detected lanes on the original video
+#     HUD Creation: Adds text overlay with detection status
+#     Color Coding: Uses colors to indicate detection confidence
+#     Polygon Filling: Fills the lane area between detected boundaries
+#     Status Display: Shows left/right detection status and confidence
+# Key Methods:
+#     draw_lane_polygon(): Fills the area between lanes
+#     draw_lane_lines(): Draws the lane boundaries
+#     draw_hud(): Adds text information overlay
+#     create_overlay(): Combines all visual elements
+
+class OverlayRenderer:
+    def __init__(self):
+        self.colors = {
+            'left_lane': (0, 255, 0),    # Green
+            'right_lane': (255, 0, 0),   # Blue
+            'uncertain': (128, 128, 128) # Gray
+        }
+        self.confidence_threshold = 0.6
+    
+    def draw_lane_polygon(self, image, left_fit, right_fit, Minv, confidence_left, confidence_right):
+        """Draw the lane area on the original image"""
+        if left_fit is None or right_fit is None:
+            return image
+        
+        height, width = image.shape[:2]
+        ploty = np.linspace(0, height - 1, height)
+        
+        # Calculate points for left and right lanes
+        left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
+        right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
+        
+        # Create an image to draw the lines on
+        warp_zero = np.zeros((height, width), dtype=np.uint8)
+        color_warp = np.dstack((warp_zero, warp_zero, warp_zero))
+        
+        # Recast x and y for cv2.fillPoly()
+        pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
+        pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
+        pts = np.hstack((pts_left, pts_right))
+        
+        # Draw the lane onto the warped blank image
+        cv2.fillPoly(color_warp, np.int_([pts]), (0, 255, 0))
+        
+        # Warp back to original image space
+        newwarp = cv2.warpPerspective(color_warp, Minv, (width, height))
+        
+        # Combine with original image
+        result = cv2.addWeighted(image, 1, newwarp, 0.3, 0)
+        return result
+    
+    def draw_lane_lines(self, image, left_fit, right_fit, Minv, confidence_left, confidence_right):
+        """Draw left and right lane lines"""
+        if left_fit is None and right_fit is None:
+            return image
+        
+        height, width = image.shape[:2]
+        ploty = np.linspace(0, height - 1, height)
+        
+        # Draw left lane
+        if left_fit is not None:
+            left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
+            left_points = np.array([np.transpose(np.vstack([left_fitx, ploty]))], dtype=np.int32)
+            
+            color = self.colors['left_lane'] if confidence_left > self.confidence_threshold else self.colors['uncertain']
+            line_type = cv2.LINE_AA if confidence_left > self.confidence_threshold else cv2.LINE_AA
+            
+            cv2.polylines(image, left_points, False, color, thickness=5, lineType=line_type)
+        
+        # Draw right lane
+        if right_fit is not None:
+            right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
+            right_points = np.array([np.transpose(np.vstack([right_fitx, ploty]))], dtype=np.int32)
+            
+            color = self.colors['right_lane'] if confidence_right > self.confidence_threshold else self.colors['uncertain']
+            line_type = cv2.LINE_AA if confidence_right > self.confidence_threshold else cv2.LINE_AA
+            
+            cv2.polylines(image, right_points, False, color, thickness=5, lineType=line_type)
+        
+        return image
+    
+    def draw_hud(self, image, left_detected, right_detected, left_conf, right_conf, lat_offset=0.0):
+        """Draw heads-up display information with larger font and colored sections"""
+        hud_text = [
+            ("Road Lane Assist by: Kipchirchir Raphael, LGL7CS", (0, 255, 255)),    # Yellow
+            (f"Left: {'YES' if left_detected else 'NO'} | Conf: {left_conf:.2f}", 
+            (0, 255, 0) if left_detected else (0, 165, 255)),  # Green if YES, Orange if NO
+            (f"Right: {'YES' if right_detected else 'NO'} | Conf: {right_conf:.2f}", 
+            (0, 255, 0) if right_detected else (0, 165, 255)),  # Green if YES, Orange if NO
+            (f"Lat Offset: {lat_offset:+.2f}m", (255, 255, 0))     # Cyan
+        ]
+        
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.9        
+        thickness = 2
+        shadow_offset = (2, 2)
+        line_spacing = 40       # Increased spacing for larger text
+
+        for i, (text, color) in enumerate(hud_text):
+            y = 40 + i * line_spacing  # Start lower to avoid cutting off top
+            
+            # Shadow (black)
+            cv2.putText(image, text, (10 + shadow_offset[0], y + shadow_offset[1]),
+                        font, font_scale, (0, 0, 0), thickness + 1)
+            
+            # Main text (colored)
+            cv2.putText(image, text, (10, y),
+                        font, font_scale, color, thickness)
+        
+        return image
+    
+    def create_overlay(self, image, left_fit, right_fit, Minv, left_conf, right_conf, lat_offset=0.0):
+        """Create complete overlay with lane area, lines, and HUD"""
+        # Create base overlay with lane area
+        overlay = self.draw_lane_polygon(image.copy(), left_fit, right_fit, Minv, left_conf, right_conf)
+        
+        # Add lane lines
+        overlay = self.draw_lane_lines(overlay, left_fit, right_fit, Minv, left_conf, right_conf)
+        
+        # Add HUD
+        left_detected = left_conf > self.confidence_threshold
+        right_detected = right_conf > self.confidence_threshold
+        overlay = self.draw_hud(overlay, left_detected, right_detected, left_conf, right_conf, lat_offset)
+        
+        return overlay
