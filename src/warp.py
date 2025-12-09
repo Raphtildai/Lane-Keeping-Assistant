@@ -30,22 +30,26 @@ class PerspectiveTransformer:
         Returns:
             Tuple of (M, Minv) transformation matrices
         """
-        # FORWARD-FACING CAMERA: Source points form a trapezoid (perspective view)
-        # Bottom points are wider (closer to camera), top points are narrower (further away)
+        # --------------------------------------------------------------------------------
+        # FORWARD-FACING CAMERA: Source points (Trapezoid) - ANCHOR ON LANE LINES
+        # Using a wide base (10% to 90%) and anchoring the top points 
+        # right at the visible convergence point (around Y=0.65).
         self.src_points = np.float32([
-            [self.width * 0.20, self.height * 0.95],  # Bottom-left (near car)
-            [self.width * 0.40, self.height * 0.65],  # Top-left (road vanishing point)
-            [self.width * 0.60, self.height * 0.65],  # Top-right (road vanishing point)
-            [self.width * 0.80, self.height * 0.95]   # Bottom-right (near car)
+            [self.width * 0.10, self.height * 0.98],   # Bottom-left 
+            [self.width * 0.46, self.height * 0.65],   # Top-left (Slightly narrower)
+            [self.width * 0.54, self.height * 0.65],   # Top-right (Slightly narrower)
+            [self.width * 0.90, self.height * 0.98]    # Bottom-right 
         ])
         
-        # BIRD'S-EYE VIEW: Destination points form a rectangle (top-down view)
+        # BIRD'S-EYE VIEW: Destination points (Rectangle) - Projects a long, parallel road
+        # Stretching the destination up to Y=0.20 creates a long, parallel, stable box.
         self.dst_points = np.float32([
-            [self.width * 0.25, self.height * 0.95],  # Bottom-left
-            [self.width * 0.25, self.height * 0.40],  # Top-left (further in distance)
-            [self.width * 0.75, self.height * 0.40],  # Top-right
-            [self.width * 0.75, self.height * 0.95]   # Bottom-right
+            [self.width * 0.20, self.height * 0.98], 
+            [self.width * 0.20, self.height * 0.20], 
+            [self.width * 0.80, self.height * 0.20], 
+            [self.width * 0.80, self.height * 0.98]
         ])
+        # --------------------------------------------------------------------------------
         
         try:
             M = cv2.getPerspectiveTransform(self.src_points, self.dst_points)

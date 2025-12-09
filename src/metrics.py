@@ -1,39 +1,31 @@
 import numpy as np
 import pandas as pd
 
-# Tracks and reports system performance metrics
-# Responsibilities:
-#     Data Collection: Records detection results for each frame
-#     Lateral Offset Calculation: Measures vehicle position relative to lane center
-#     CSV Export: Saves frame-by-frame data for analysis
-#     Summary Statistics: Calculates overall performance metrics
-#     Stability Measurement: Tracks detection consistency over time
-# Key Methods:
-#     calculate_lateral_offset(): Computes vehicle offset from lane center
-#     record_frame_metrics(): Stores per-frame data
-#     save_to_csv(): Exports data for analysis
-#     calculate_summary_metrics(): Generates performance reports
-
 class MetricsCalculator:
     def __init__(self):
         self.frame_metrics = []
         
     def calculate_lateral_offset(self, left_fit, right_fit, image_width, image_height):
         """Calculate lateral offset from lane center (in meters)"""
+        # 🛑 FIX: Ensure fits are not None before attempting to calculate offset
         if left_fit is None or right_fit is None:
             return 0.0
-        
+            
+        # Check if the fits are valid polynomial arrays (size=3)
+        if left_fit.size != 3 or right_fit.size != 3:
+            return 0.0
+            
         # Calculate lane center at bottom of image
         y = image_height - 1
-        left_x = left_fit[0]*y**2 + left_fit[1]*y + left_fit[2]
-        right_x = right_fit[0]*y**2 + right_fit[1]*y + right_fit[2]
+        left_x = np.polyval(left_fit, y)
+        right_x = np.polyval(right_fit, y)
         lane_center = (left_x + right_x) / 2
         
         # Calculate vehicle center (assumed center of image)
         vehicle_center = image_width / 2
         
         # Convert to meters
-        xm_per_pix = 3.7 / 700  # meters per pixel
+        xm_per_pix = 3.7 / 700 
         offset_pixels = vehicle_center - lane_center
         offset_meters = offset_pixels * xm_per_pix
         

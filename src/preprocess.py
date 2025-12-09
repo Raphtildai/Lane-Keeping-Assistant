@@ -1,19 +1,6 @@
 import cv2
 import numpy as np
 
-# Transforms raw video frames into binary images highlighting lane markings
-# Responsibilities:
-#     Color Space Conversion: Converts BGR to HLS, HSV, LAB for better lane detection
-#     Thresholding: Applies multiple thresholds to detect white/yellow lane markings
-#     Edge Detection: Uses Sobel operators to find vertical edges (lane boundaries)
-#     Noise Reduction: Applies morphological operations to clean up the binary image
-#     Region of Interest: Focuses processing on the road area (ignores sky, etc.)
-# Key Methods:
-#     combine_thresholds(): Main method that combines all detection techniques
-#     adaptive_white_detection(): Specifically targets white lane markings
-#     edge_detection(): Finds vertical edges using Sobel operators
-#     region_of_interest(): Masks non-road areas
-
 class LanePreprocessor:
     def __init__(self):
         # Conservative thresholds for lane detection

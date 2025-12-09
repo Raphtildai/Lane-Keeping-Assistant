@@ -30,3 +30,11 @@ tusimple_data/
 # keep a tiny sample (≤ 50 MB) if you want
 !data/sample_test_video.mp4
 !outputs/sample_output/sample_test_video.mp4
+
+# Track the following videos
+!data/solidWhiteRight.mp4
+!data/solidYellowLeft.mp4
+
+# Track the output videos
+!outputs/solidWhiteRight/solidWhiteRight.mp4
+!outputs/solidYellowLeft/solidYellowLeft.mp4

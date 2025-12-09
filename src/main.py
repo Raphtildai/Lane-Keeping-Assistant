@@ -17,21 +17,8 @@ from overlay import OverlayRenderer
 from metrics import MetricsCalculator
 from utils import apply_roi
 
-# This is the main driver that coordinates everything
-# Responsibilities:
-#     Video I/O: Reads input video and writes annotated output
-#     Pipeline Coordination: Calls each processing step in sequence
-#     Frame Management: Processes each frame through the complete pipeline
-#     Component Initialization: Creates all the processing objects
-#     Error Handling: Catches and manages errors to prevent complete failure
-# Key Components:
-#     LKASystem class: Main controller class
-#     Video capture and writer setup
-#     Frame-by-frame processing loop
-#     Metrics collection and output
-
 class LKASystem:
-    def __init__(self, video_path, output_dir, debug=False):
+    def __init__(self, video_path, output_dir, debug=True):
         self.video_path = video_path
         self.output_dir = output_dir
         self.debug = debug
@@ -49,7 +36,21 @@ class LKASystem:
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # ⚠️ ADD GENERIC CAMERA CALIBRATION DATA (CRITICAL FIX) ⚠️
+        # These parameters are typical for a wide-angle dashcam (1280x720) 
+        # and help correct the worst of the lens distortion.
+        # Focal length (fx, fy) around 1100-1200 is common for good resolution.
+        self.mtx = np.array([
+            [1100.0, 0.0, self.width / 2],
+            [0.0, 1100.0, self.height / 2],
+            [0.0, 0.0, 1.0]
+        ], dtype=np.float32)
         
+        # Distortion coefficients (k1, k2, p1, p2, k3)
+        # Using small values for k1/k2 to handle common barrel distortion.
+        self.dist = np.array([-0.24, 0.01, 0.001, -0.001, 0.0], dtype=np.float32)
+
         print(f"Video properties: {self.width}x{self.height}, FPS: {self.fps}, Frames: {self.total_frames}")
         
         self.perspective_transformer = PerspectiveTransformer((self.width, self.height))
@@ -60,6 +61,9 @@ class LKASystem:
         
         # Test perspective transform on first frame (with error handling)
         if self.debug:
+            # VISUALIZE THE PERSPECTIVE POINTS ON THE UNDISTORTED FRAME
+            # This will show the green trapezoid (Source) and the blue rectangle (Destination)
+            undistorted_frame = self.perspective_transformer.visualize_perspective_areas(undistorted_frame)
             try:
                 ret, test_frame = self.cap.read()
                 if ret:
@@ -94,24 +98,37 @@ class LKASystem:
     def process_frame(self, frame, frame_id):
         """Process a single frame through the LKA pipeline"""
         try:
-            # Preprocessing
-            binary_mask = self.preprocessor.combine_thresholds(frame)
+            # 1. UNDISTORTION 
+            undistorted_frame = cv2.undistort(frame, self.mtx, self.dist, None, self.mtx)
             
-            # Apply ROI
-            roi_mask, roi_offset = apply_roi(binary_mask)
+            # Visualization of perspective points (Recommended for debugging transformation failure)
+            if self.debug:
+                undistorted_frame = self.perspective_transformer.visualize_perspective_areas(undistorted_frame)
+                
+            # Preprocessing
+            binary_mask = self.preprocessor.combine_thresholds(undistorted_frame)
+            
+            # Preprocessing
+            # Use the undistorted frame for all subsequent processing
+            binary_mask = self.preprocessor.combine_thresholds(undistorted_frame)
+            
+            # Apply ROI (Original frame is now corrected)
+            # roi_mask, roi_offset = apply_roi(binary_mask)
             
             # Perspective transform with fallback
             try:
-                birdseye = self.perspective_transformer.warp_to_birdeye(roi_mask)
+                birdseye = self.perspective_transformer.warp_to_birdeye(binary_mask)
                 
                 # If warp returns empty image, use the ROI mask as fallback
                 if np.sum(birdseye) == 0:
                     print(f"Frame {frame_id}: Warp failed, using ROI mask as fallback")
-                    birdseye = roi_mask
+                    birdseye = binary_mask
                     
             except Exception as e:
                 print(f"Frame {frame_id}: Perspective transform error: {e}")
-                birdseye = roi_mask  # Fallback to ROI mask
+                birdseye = binary_mask  # Fallback to ROI mask
+                # Fallback for display
+                birdseye_display = np.zeros_like(undistorted_frame)
             
             # Lane detection
             leftx_base, rightx_base = self.lane_detector.find_lane_base(birdseye)
@@ -134,12 +151,17 @@ class LKASystem:
             prev_left_fit = self.temporal_filter.left_fit_buffer[-1] if self.temporal_filter.left_fit_buffer else None
             prev_right_fit = self.temporal_filter.right_fit_buffer[-1] if self.temporal_filter.right_fit_buffer else None
             
+            # left_conf = self.lane_detector.calculate_confidence(left_fit, leftx, lefty, prev_left_fit)
+            # right_conf = self.lane_detector.calculate_confidence(right_fit, rightx, righty, prev_right_fit)
+            # # Temporal smoothing
+            # smoothed_left, smoothed_right = self.temporal_filter.update(left_fit, right_fit, left_conf, right_conf)
+            
             left_conf = self.lane_detector.calculate_confidence(left_fit, leftx, lefty, prev_left_fit)
             right_conf = self.lane_detector.calculate_confidence(right_fit, rightx, righty, prev_right_fit)
             
             # Temporal smoothing
             smoothed_left, smoothed_right = self.temporal_filter.update(left_fit, right_fit, left_conf, right_conf)
-            
+
             # Calculate lateral offset
             # What the Values Mean:
             # lateral_offset = 0.0: Vehicle perfectly centered in lane
@@ -157,19 +179,69 @@ class LKASystem:
             self.metrics_calculator.record_frame_metrics(
                 frame_id, left_detected, right_detected, left_conf, right_conf, lat_offset
             )
+
+            # 3. Bird's-Eye View with Detection Overlay
+            # You will need a method in LaneDetector (or a utility function) 
+            # to draw the fitted polynomial lines onto the birdseye image.
+            birdseye_fit_overlay = self.lane_detector.draw_detection(
+                birdseye, leftx, lefty, rightx, righty, 
+                smoothed_left, smoothed_right
+            )
             
             # Create overlay
             overlay = self.overlay_renderer.create_overlay(
                 frame, smoothed_left, smoothed_right, 
                 self.perspective_transformer.Minv, left_conf, right_conf, lat_offset
             )
-            
+
+            # --- VISUALIZATION STITCHING (Optimized) ---
+            if self.debug:
+                # --- CONFIGURATION: ADJUST THIS VALUE ---
+                # Try 0.3 for a small screen, 0.4 for medium, or 0.5 for large.
+                # E.g., for a 1920x1080 video, 0.4 scale makes the window approx 1536x864.
+                FINAL_SCALE_FACTOR = 0.4
+                
+                # 1. Create Birdseye Overlay
+                birdseye_fit_overlay = self.lane_detector.draw_detection(
+                    birdseye, leftx, lefty, rightx, righty, 
+                    smoothed_left, smoothed_right
+                )
+                
+                # 2. Prepare other views for stitching
+                h, w, _ = undistorted_frame.shape
+                binary_mask_bgr = cv2.cvtColor(binary_mask * 255, cv2.COLOR_GRAY2BGR)
+
+                # Ensure all four images are the same size (Original size for simplicity)
+                # You might need to resize birdseye_fit_overlay if it was created with different dims
+                # We assume birdseye and undistorted_frame are the same size (w, h)
+                
+                # 3. Create the 2x2 grid at the FULL SIZE
+                top_row = np.hstack((undistorted_frame, binary_mask_bgr))
+                bottom_row = np.hstack((birdseye_fit_overlay, overlay))
+
+                debug_visualization = np.vstack((top_row, bottom_row))
+                
+                # 4. APPLY FINAL RESIZE
+                new_width = int(debug_visualization.shape[1] * FINAL_SCALE_FACTOR)
+                new_height = int(debug_visualization.shape[0] * FINAL_SCALE_FACTOR)
+                
+                # Resize the entire stitched image down to fit the screen
+                debug_visualization_scaled = cv2.resize(
+                    debug_visualization, (new_width, new_height), interpolation=cv2.INTER_LINEAR
+                )
+
+                # 5. Show the scaled visualization
+                cv2.imshow("LKA Debug Pipeline", debug_visualization_scaled)
+                cv2.waitKey(1)
+                
             return overlay
             
         except Exception as e:
+            # Log the error, but still return a frame to avoid crashing the video writer
             print(f"Error processing frame {frame_id}: {e}")
-            # Return original frame if processing fails
-            return frame
+            # Ensure windows are closed on critical error if needed
+            # cv2.destroyAllWindows() 
+            return frame # Return original frame if processing fails
     
     def run(self):
         """Run the LKA system on the entire video"""
@@ -184,6 +256,12 @@ class LKASystem:
             # Process frame
             processed_frame = self.process_frame(frame, frame_id)
             
+            # If not in debug mode, you can still show the final output
+            if not self.debug:
+                 cv2.imshow("LKA Final Output", processed_frame)
+                 if cv2.waitKey(1) & 0xFF == ord('q'):
+                     break
+            
             # Write to output video
             self.out.write(processed_frame)
             
@@ -196,6 +274,7 @@ class LKASystem:
         # Cleanup
         self.cap.release()
         self.out.release()
+        cv2.destroyAllWindows()
         
         # Save metrics
         csv_path = os.path.join(self.output_dir, 'per_frame_metrics.csv')

@@ -1,19 +1,6 @@
 import numpy as np
 import cv2
 
-# Finds lane pixels and fits mathematical curves to represent lanes
-# Responsibilities:
-#     Histogram Analysis: Finds lane starting positions at the bottom of the image
-#     Sliding Window Search: Moves upward to collect lane pixels
-#     Polynomial Fitting: Fits 2nd-order polynomials to lane pixels
-#     Confidence Calculation: Determines how reliable the detection is
-#     Pixel Management: Tracks left and right lane pixels separately
-# Key Methods:
-#     find_lane_base(): Uses histogram to find initial lane positions
-#     sliding_window_search(): Follows lane pixels upward
-#     fit_polynomial(): Fits curves to lane pixels
-#     calculate_confidence(): Scores detection reliability
-
 class LaneDetector:
     def __init__(self, n_windows=9, margin=100, minpix=50):
         self.n_windows = n_windows
@@ -21,6 +8,9 @@ class LaneDetector:
         self.minpix = minpix
         self.ym_per_pix = 30 / 720  # meters per pixel in y dimension
         self.xm_per_pix = 3.7 / 700  # meters per pixel in x dimension
+        # Initialize placeholders for last successful fits for fallback
+        self.last_left_fit = None
+        self.last_right_fit = None
         
     def find_lane_base(self, binary_warped):
         """Find starting position for left and right lanes using histogram"""
@@ -28,7 +18,9 @@ class LaneDetector:
             return None, None
             
         # Take a histogram of the bottom half of the image
-        histogram = np.sum(binary_warped[binary_warped.shape[0]//2:, :], axis=0)
+        # CRITICAL STABILITY TWEAK: Use only the bottom quarter for more robust base detection
+        y_cutoff = int(binary_warped.shape[0] * 0.75) 
+        histogram = np.sum(binary_warped[y_cutoff:, :], axis=0) 
         
         if np.max(histogram) == 0:
             print("No lane pixels found in histogram")
@@ -40,7 +32,6 @@ class LaneDetector:
         leftx_base = np.argmax(histogram[:midpoint])
         rightx_base = np.argmax(histogram[midpoint:]) + midpoint
         
-        # print(f"Histogram peaks - Left: {leftx_base}, Right: {rightx_base}")
         return leftx_base, rightx_base
     
     def sliding_window_search(self, binary_warped, leftx_base, rightx_base):
@@ -105,35 +96,44 @@ class LaneDetector:
     
     def fit_polynomial(self, binary_warped, left_lane_inds, right_lane_inds):
         """Fit polynomials to lane pixels"""
+        
+        # 🛑 CRITICAL FIX: Ensure lane_inds are usable numpy arrays
+        if not isinstance(left_lane_inds, np.ndarray):
+            left_lane_inds = np.array(left_lane_inds, dtype=np.int64)
+        if not isinstance(right_lane_inds, np.ndarray):
+            right_lane_inds = np.array(right_lane_inds, dtype=np.int64)
+
         nonzero = binary_warped.nonzero()
         nonzeroy = np.array(nonzero[0])
         nonzerox = np.array(nonzero[1])
         
-        # Extract left and right line pixel positions
-        leftx = nonzerox[left_lane_inds]
-        lefty = nonzeroy[left_lane_inds] 
-        rightx = nonzerox[right_lane_inds]
-        righty = nonzeroy[right_lane_inds]
+        left_fit = self.last_left_fit # Use last successful fit as a base
+        right_fit = self.last_right_fit
         
-        # Fit second order polynomial
-        left_fit = None
-        right_fit = None
-        
-        if len(leftx) > 0 and len(lefty) > 0:
+        # Initialize pixel lists to empty arrays
+        leftx = np.array([])
+        lefty = np.array([]) 
+        rightx = np.array([])
+        righty = np.array([])
+
+        # Check for empty index arrays BEFORE indexing (PREVENTS 'slice' ERROR)
+        if left_lane_inds.size > 0:
+            leftx = nonzerox[left_lane_inds]
+            lefty = nonzeroy[left_lane_inds] 
             try:
                 left_fit = np.polyfit(lefty, leftx, 2)
-                # print(f"Left fit coefficients: {left_fit}")
-            except:
-                print("Failed to fit left lane polynomial")
-                left_fit = None
+                self.last_left_fit = left_fit # Update last good fit
+            except Exception as e:
+                print(f"Failed to fit left lane polynomial: {e}")
                 
-        if len(rightx) > 0 and len(righty) > 0:
+        if right_lane_inds.size > 0:
+            rightx = nonzerox[right_lane_inds]
+            righty = nonzeroy[right_lane_inds]
             try:
                 right_fit = np.polyfit(righty, rightx, 2)
-                # print(f"Right fit coefficients: {right_fit}")
-            except:
-                print("Failed to fit right lane polynomial")
-                right_fit = None
+                self.last_right_fit = right_fit # Update last good fit
+            except Exception as e:
+                print(f"Failed to fit right lane polynomial: {e}")
         
         return left_fit, right_fit, leftx, lefty, rightx, righty
     
@@ -143,14 +143,16 @@ class LaneDetector:
             return 0.0
         
         # Pixel count score
-        pixel_score = min(len(x) / 1000, 1.0)
+        pixel_score = min(len(x) / 1000, 1.0) # Assume 1000 pixels is "perfect"
         
         # Fit residual score
         if len(x) > 0:
             try:
-                predicted_x = fit[0]*y**2 + fit[1]*y + fit[2]
+                # Use np.polyval for safer evaluation
+                predicted_x = np.polyval(fit, y)
                 residual = np.mean(np.abs(predicted_x - x))
-                residual_score = max(1.0 - residual / 50, 0.0)
+                # Adjusting divisor for more reasonable scoring
+                residual_score = max(1.0 - residual / 25, 0.0) 
             except:
                 residual_score = 0.0
         else:
@@ -158,16 +160,53 @@ class LaneDetector:
         
         # Temporal consistency score
         temporal_score = 1.0
-        if prev_fit is not None:
+        if prev_fit is not None and prev_fit.size == fit.size: # Check size before subtraction
             try:
+                # Increase sensitivity to changes by lowering the divisor
                 coeff_diff = np.sum(np.abs(fit - prev_fit))
-                temporal_score = max(1.0 - coeff_diff / 100, 0.0)
+                temporal_score = max(1.0 - coeff_diff / 25, 0.0) 
             except:
                 temporal_score = 0.0
         
-        # Combined confidence
-        confidence = 0.4 * pixel_score + 0.4 * residual_score + 0.2 * temporal_score
+        # Combined confidence (Adjusting weights for more reliance on Residual and Temporal)
+        confidence = 0.2 * pixel_score + 0.5 * residual_score + 0.3 * temporal_score
         confidence = max(0.0, min(1.0, confidence))
         
         print(f"Confidence - Pixel: {pixel_score:.3f}, Residual: {residual_score:.3f}, Temporal: {temporal_score:.3f}, Final: {confidence:.3f}")
         return confidence
+    
+    def draw_detection(self, 
+                       birdseye_img, 
+                       leftx, lefty, rightx, righty, 
+                       left_fit, right_fit):
+        """
+        Draws the detected points and the fitted polynomial lines 
+        onto the bird's-eye view for visualization.
+        """
+        # Convert the single-channel binary image to a 3-channel color image
+        out_img = cv2.cvtColor(birdseye_img * 255, cv2.COLOR_GRAY2BGR)
+        
+        # 1. Draw the detected pixels (optional: can be memory intensive)
+        # out_img[lefty, leftx] = [255, 0, 0] # Blue for left pixels
+        # out_img[righty, rightx] = [0, 0, 255] # Red for right pixels
+
+        # 2. Draw the fitted polynomial lines
+        ploty = np.linspace(0, birdseye_img.shape[0] - 1, birdseye_img.shape[0])
+        
+        if left_fit is not None:
+            left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
+            for i in range(len(ploty)):
+                x = int(left_fitx[i])
+                y = int(ploty[i])
+                if 0 <= x < birdseye_img.shape[1]:
+                    cv2.circle(out_img, (x, y), 3, (0, 255, 255), -1) # Yellow for smoothed left fit
+
+        if right_fit is not None:
+            right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
+            for i in range(len(ploty)):
+                x = int(right_fitx[i])
+                y = int(ploty[i])
+                if 0 <= x < birdseye_img.shape[1]:
+                    cv2.circle(out_img, (x, y), 3, (0, 255, 255), -1) # Yellow for smoothed right fit
+        
+        return out_img

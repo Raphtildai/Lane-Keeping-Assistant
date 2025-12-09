@@ -66,7 +66,7 @@ def test_lka_on_sample():
     """Test the LKA system on a sample video"""
     # Create improved sample video
     # video_path = Path("data/sample_test_video.mp4")
-    video_path = Path("data/road_5.mp4")
+    video_path = Path("data/solidWhiteRight.mp4")
     if video_path.exists():
         # Use existing video
         print("Using existing sample video...")

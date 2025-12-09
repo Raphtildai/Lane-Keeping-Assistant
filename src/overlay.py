@@ -1,19 +1,6 @@
 import cv2
 import numpy as np
 
-# Creates the final annotated video with lane overlays and information display
-# Responsibilities:
-#     Lane Drawing: Draws detected lanes on the original video
-#     HUD Creation: Adds text overlay with detection status
-#     Color Coding: Uses colors to indicate detection confidence
-#     Polygon Filling: Fills the lane area between detected boundaries
-#     Status Display: Shows left/right detection status and confidence
-# Key Methods:
-#     draw_lane_polygon(): Fills the area between lanes
-#     draw_lane_lines(): Draws the lane boundaries
-#     draw_hud(): Adds text information overlay
-#     create_overlay(): Combines all visual elements
-
 class OverlayRenderer:
     def __init__(self):
         self.colors = {
@@ -24,28 +11,48 @@ class OverlayRenderer:
         self.confidence_threshold = 0.6
     
     def draw_lane_polygon(self, image, left_fit, right_fit, Minv, confidence_left, confidence_right):
-        """Draw the lane area on the original image"""
+        """Draw the lane area on the original image, clipped at the horizon/convergence point."""
         if left_fit is None or right_fit is None:
             return image
         
         height, width = image.shape[:2]
+        
+        # 1. Define the Y-range for plotting (from bottom to top)
         ploty = np.linspace(0, height - 1, height)
         
-        # Calculate points for left and right lanes
-        left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
-        right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
+        # --- CLIPPING POINT DEFINITION ---
+        # The clip is based on the top edge of your source trapezoid (Y=0.65*H)
+        CLIP_RATIO = 0.65 
+        clip_y = int(height * CLIP_RATIO)
         
+        # Find the index corresponding to the clip_y coordinate
+        clip_index = np.where(ploty >= clip_y)[0][0]
+        
+        # 2. Calculate the X-points for the full range
+        left_fitx_full = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
+        right_fitx_full = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
+        
+        # 3. CLIP THE COORDINATE ARRAYS
+        # We only want points from the clip_index down to the bottom (end of the array)
+        ploty_clipped = ploty[clip_index:]
+        left_fitx = left_fitx_full[clip_index:]
+        right_fitx = right_fitx_full[clip_index:]
+
         # Create an image to draw the lines on
         warp_zero = np.zeros((height, width), dtype=np.uint8)
         color_warp = np.dstack((warp_zero, warp_zero, warp_zero))
         
-        # Recast x and y for cv2.fillPoly()
-        pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
-        pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
+        # 4. Create the polygon points using the clipped arrays
+        # Point Order: Bottom-left -> Top-left (at clip_y) -> Top-right (at clip_y) -> Bottom-right
+        pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty_clipped]))])
+        pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty_clipped])))]) # Reversed order for proper closing
+        
+        # The polygon should now close correctly at the clip_y line
         pts = np.hstack((pts_left, pts_right))
         
         # Draw the lane onto the warped blank image
-        cv2.fillPoly(color_warp, np.int_([pts]), (0, 255, 0))
+        # Note: Must use np.int32 for cv2.fillPoly
+        cv2.fillPoly(color_warp, np.int32(pts), (100, 255, 100)) # Light Green/Yellow
         
         # Warp back to original image space
         newwarp = cv2.warpPerspective(color_warp, Minv, (width, height))
@@ -55,33 +62,68 @@ class OverlayRenderer:
         return result
     
     def draw_lane_lines(self, image, left_fit, right_fit, Minv, confidence_left, confidence_right):
-        """Draw left and right lane lines"""
+        """Draw left and right lane lines, clipped at the horizon/convergence point."""
         if left_fit is None and right_fit is None:
             return image
         
         height, width = image.shape[:2]
         ploty = np.linspace(0, height - 1, height)
+
+        # --- CLIPPING POINT DEFINITION ---
+        CLIP_RATIO = 0.65 
+        clip_y = int(height * CLIP_RATIO)
+        clip_index = np.where(ploty >= clip_y)[0][0]
+        
+        # Clip the Y-values
+        ploty_clipped = ploty[clip_index:]
         
         # Draw left lane
         if left_fit is not None:
-            left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
-            left_points = np.array([np.transpose(np.vstack([left_fitx, ploty]))], dtype=np.int32)
+            left_fitx_full = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
+            left_fitx_clipped = left_fitx_full[clip_index:]
+
+            # Create clipped points array
+            left_points = np.array([np.transpose(np.vstack([left_fitx_clipped, ploty_clipped]))], dtype=np.int32)
             
+            # FIX SWAP: Left lane should be GREEN (0, 255, 0)
             color = self.colors['left_lane'] if confidence_left > self.confidence_threshold else self.colors['uncertain']
             line_type = cv2.LINE_AA if confidence_left > self.confidence_threshold else cv2.LINE_AA
             
-            cv2.polylines(image, left_points, False, color, thickness=5, lineType=line_type)
-        
-        # Draw right lane
+            # 1. Create a blank image
+            line_warp = np.zeros((height, width, 3), dtype=np.uint8)
+            
+            # 2. Draw the line on the warped blank image (bird's eye view)
+            cv2.polylines(line_warp, left_points, False, color, thickness=10, lineType=line_type) 
+            
+            # 3. Warp the line back to original image space
+            newwarp = cv2.warpPerspective(line_warp, Minv, (width, height))
+            
+            # 4. Combine with image (use cv2.addWeighted or simply addition)
+            image = cv2.addWeighted(image, 1, newwarp, 1.0, 0)
+            
+        # Draw right lane (similar logic)
         if right_fit is not None:
-            right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
-            right_points = np.array([np.transpose(np.vstack([right_fitx, ploty]))], dtype=np.int32)
+            right_fitx_full = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
+            right_fitx_clipped = right_fitx_full[clip_index:]
+
+            # Create clipped points array
+            right_points = np.array([np.transpose(np.vstack([right_fitx_clipped, ploty_clipped]))], dtype=np.int32)
             
             color = self.colors['right_lane'] if confidence_right > self.confidence_threshold else self.colors['uncertain']
             line_type = cv2.LINE_AA if confidence_right > self.confidence_threshold else cv2.LINE_AA
+
+            # 1. Create a blank image
+            line_warp = np.zeros((height, width, 3), dtype=np.uint8)
             
-            cv2.polylines(image, right_points, False, color, thickness=5, lineType=line_type)
-        
+            # 2. Draw the line on the warped blank image (bird's eye view)
+            cv2.polylines(line_warp, right_points, False, color, thickness=10, lineType=line_type) 
+            
+            # 3. Warp the line back to original image space
+            newwarp = cv2.warpPerspective(line_warp, Minv, (width, height))
+            
+            # 4. Combine with image
+            image = cv2.addWeighted(image, 1, newwarp, 1.0, 0)
+            
         return image
     
     def draw_hud(self, image, left_detected, right_detected, left_conf, right_conf, lat_offset=0.0):
@@ -96,7 +138,7 @@ class OverlayRenderer:
         ]
         
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.9        
+        font_scale = 0.6        
         thickness = 2
         shadow_offset = (2, 2)
         line_spacing = 40       # Increased spacing for larger text
